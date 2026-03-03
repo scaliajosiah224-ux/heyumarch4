@@ -7,12 +7,26 @@ module.exports = {
   ],
   theme: {
   	extend: {
+  		fontFamily: {
+  			sans: ['Quicksand', 'sans-serif'],
+  			heading: ['Nunito', 'sans-serif'],
+  			accent: ['Fredoka', 'sans-serif'],
+  		},
   		borderRadius: {
   			lg: 'var(--radius)',
   			md: 'calc(var(--radius) - 2px)',
   			sm: 'calc(var(--radius) - 4px)'
   		},
   		colors: {
+  			gummy: {
+  				primary: '#D946EF',
+  				'primary-light': '#F0ABFC',
+  				'primary-dark': '#86198F',
+  				secondary: '#8B5CF6',
+  				cyan: '#06B6D4',
+  				bg: '#0D0415',
+  				'bg-start': '#1A0529',
+  			},
   			background: 'hsl(var(--background))',
   			foreground: 'hsl(var(--foreground))',
   			card: {
