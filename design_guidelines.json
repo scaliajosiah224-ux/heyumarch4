@@ -1,0 +1,149 @@
+{
+  "project_name": "GummyText - 2026 Edition",
+  "design_philosophy": {
+    "aesthetic": "Gummy UI 2026",
+    "core_principles": [
+      "Tactile & Edible: Elements should look soft, squishy, and touchable.",
+      "Deep Depth: Use layered blurs, inner shadows, and glossy highlights.",
+      "Neon Organic: Dark backgrounds with vibrant, fluorescent organic shapes.",
+      "Playful Physics: Bouncy animations and fluid transitions.",
+      "Glass & Jelly: Surfaces are either frosted glass or clear jelly."
+    ],
+    "mood": "Playful, Premium, Futuristic, Friendly, Juicy"
+  },
+  "typography": {
+    "font_family": {
+      "headings": "Nunito, sans-serif",
+      "body": "Quicksand, sans-serif",
+      "accent": "Fredoka, sans-serif"
+    },
+    "scale": {
+      "h1": "text-5xl md:text-7xl font-black tracking-tight leading-none",
+      "h2": "text-4xl md:text-5xl font-extrabold tracking-tight",
+      "h3": "text-2xl md:text-3xl font-bold",
+      "body_lg": "text-lg md:text-xl font-medium leading-relaxed",
+      "body_base": "text-base font-medium leading-relaxed",
+      "caption": "text-sm font-semibold opacity-80"
+    }
+  },
+  "colors": {
+    "theme": "dark",
+    "palette": {
+      "background": {
+        "main": "#0D0415",
+        "gradient_start": "#1A0529",
+        "gradient_end": "#0D0415"
+      },
+      "primary": {
+        "main": "#D946EF",
+        "light": "#F0ABFC",
+        "dark": "#86198F",
+        "glow": "rgba(217, 70, 239, 0.5)"
+      },
+      "secondary": {
+        "main": "#8B5CF6",
+        "light": "#A78BFA",
+        "dark": "#5B21B6"
+      },
+      "accent": {
+        "cyan": "#06B6D4",
+        "lime": "#84CC16",
+        "orange": "#F97316"
+      },
+      "surface": {
+        "glass": "rgba(255, 255, 255, 0.03)",
+        "glass_border": "rgba(255, 255, 255, 0.1)",
+        "gummy_card": "rgba(45, 10, 60, 0.4)"
+      },
+      "text": {
+        "primary": "#FFFFFF",
+        "secondary": "#E9D5FF",
+        "muted": "#A8A29E"
+      }
+    }
+  },
+  "visual_enhancers": {
+    "shadows": {
+      "gummy": "inset 2px 2px 4px rgba(255,255,255,0.3), inset -2px -2px 4px rgba(0,0,0,0.4), 0px 4px 12px rgba(0,0,0,0.3)",
+      "gummy_pressed": "inset 4px 4px 8px rgba(0,0,0,0.4), inset -1px -1px 2px rgba(255,255,255,0.1)",
+      "neon_glow": "0 0 15px var(--glow-color), 0 0 30px var(--glow-color)"
+    },
+    "borders": {
+      "glass": "1px solid rgba(255, 255, 255, 0.1)",
+      "highlight": "1px solid rgba(255, 255, 255, 0.2)"
+    },
+    "radius": {
+      "default": "rounded-2xl",
+      "pill": "rounded-full",
+      "blob": "rounded-[40%_60%_70%_30%_/_40%_50%_60%_50%]"
+    }
+  },
+  "component_styling": {
+    "buttons": {
+      "primary": "bg-gradient-to-br from-fuchsia-500 to-purple-600 text-white shadow-[inset_2px_2px_6px_rgba(255,255,255,0.4),inset_-2px_-2px_6px_rgba(0,0,0,0.2),0_4px_10px_rgba(217,70,239,0.5)] hover:scale-105 active:scale-95 transition-all duration-300 rounded-full font-bold tracking-wide border-t border-white/30",
+      "secondary": "bg-white/5 backdrop-blur-md border border-white/10 text-white hover:bg-white/10 transition-all rounded-full font-semibold",
+      "ghost": "text-fuchsia-300 hover:text-white hover:bg-white/5 rounded-lg transition-colors"
+    },
+    "cards": {
+      "default": "bg-[#1e0b2b]/60 backdrop-blur-xl border border-white/5 shadow-xl rounded-3xl p-6 relative overflow-hidden",
+      "highlight": "bg-gradient-to-br from-purple-900/40 to-fuchsia-900/40 backdrop-blur-2xl border border-white/10 shadow-2xl rounded-3xl p-8"
+    },
+    "inputs": {
+      "default": "bg-black/20 border border-white/10 focus:border-fuchsia-500/50 focus:ring-2 focus:ring-fuchsia-500/20 rounded-xl h-12 px-4 text-white placeholder:text-white/30 transition-all"
+    }
+  },
+  "image_urls": {
+    "hero_blobs": [
+      {
+        "url": "https://images.unsplash.com/photo-1726413980688-a73bdf1c9944?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "description": "Abstract glossy pink object, perfect for hero background accent",
+        "category": "background"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1758739660330-03c0304fa119?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "description": "Abstract purple shapes with holes, good for section dividers",
+        "category": "background"
+      }
+    ],
+    "icons_3d": [
+       {
+        "url": "https://images.unsplash.com/photo-1689479276174-d1f4d3354fdc?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "description": "Purple metallic/glossy object, use for 'Premium' feature icon",
+        "category": "icon"
+       }
+    ]
+  },
+  "layout_rules": {
+    "spacing": "Relaxed. Use p-6 and gap-6 as defaults. Avoid tight clusters.",
+    "grid": "Use the Bento Grid (Call to action big, secondary items small).",
+    "mobile": "Bottom navigation bar is mandatory. Action buttons within thumb reach."
+  },
+  "motion": {
+    "hover": "scale-105 transition-transform duration-300 cubic-bezier(0.34, 1.56, 0.64, 1)",
+    "click": "scale-95",
+    "page_transition": "opacity-0 to opacity-100 duration-500"
+  },
+  "instructions_to_main_agent": [
+    "1. INSTALL FONTS: Add '@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;700;900&family=Quicksand:wght@400;500;700&family=Fredoka:wght@400;600&display=swap');' to index.css top.",
+    "2. GLOBAL CSS: Implement the .gummy-btn and .glass-panel utility classes in index.css for reuse.",
+    "3. BACKGROUND: The main app background must be a fixed dark gradient: 'bg-gradient-to-b from-[#1A0529] to-[#0D0415] min-h-screen text-white'.",
+    "4. DIALER: The keypad buttons must use the 'gummy' shadow style to look like candy buttons.",
+    "5. NAVIGATION: Use a floating glass bottom bar for mobile navigation.",
+    "6. ICONS: Use 'lucide-react' but wrap them in a container with a 'drop-shadow-[0_0_8px_rgba(217,70,239,0.5)]' to make them glow.",
+    "7. FORMS: Do not use default white backgrounds. Use transparent dark backgrounds with white text.",
+    "8. ONBOARDING: Use the Unsplash blob images as large distinctive graphics in the center of the onboarding slides."
+  ],
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients (except for the main background).",
+    "Don't make generic centered layouts, simplistic gradients, and uniform styling.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Use glass-morphism effects with backdrop filters (12-24px blur).",
+    "You MUST NOT apply universal transition. Eg: transition: all. This results in breaking transforms.",
+    "Every interaction needs micro-animations - hover states, transitions, entrance animations.",
+    "Use 2-3x more spacing than feels comfortable.",
+    "Subtle grain textures, noise overlays: separates good from extraordinary.",
+    "Prioritize using pre-existing components from src/components/ui when applicable.",
+    "Components MUST use named exports.",
+    "Use sonner for toasts."
+  ]
+}
