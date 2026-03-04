@@ -2,7 +2,7 @@
 
 ## Project Overview
 **App Name:** GummyText - Second Phone Number App  
-**Version:** 1.2.0 (Landing Page + Mobile App Structure)  
+**Version:** 1.3.0 (Real-time WebSocket Messaging)  
 **Last Updated:** 2026-03-04
 
 ## Original Problem Statement
@@ -63,6 +63,12 @@ Build a TextNow/Caddy clone - a complete system that includes both a mobile app 
 - [x] Subscription plans API
 - [x] Stripe checkout integration
 - [x] Payment webhook handling
+- [x] **WebSocket Real-time Messaging:**
+  - [x] /api/ws/chat - WebSocket endpoint for real-time chat
+  - [x] ConnectionManager for handling connections
+  - [x] Typing indicators support
+  - [x] Message read receipts
+  - [x] Online status tracking
 
 ### Frontend (React.js) - COMPLETE
 - [x] Onboarding flow (3 screens)
@@ -73,9 +79,15 @@ Build a TextNow/Caddy clone - a complete system that includes both a mobile app 
   - [x] Area code search with filtering
   - [x] Capability badges (Voice, SMS, MMS)
   - [x] Confirmation screen with details
+  - [x] **Back arrow navigates to Dashboard (P0 Fix)**
 - [x] Dashboard with tabs
 - [x] Messages tab with conversations
-- [x] Individual chat screen
+- [x] **Real-time Chat Screen:**
+  - [x] WebSocket connection with auto-reconnect
+  - [x] Typing indicators ("typing..." animation)
+  - [x] Connection status indicator (Wifi icon)
+  - [x] Optimistic UI updates for instant feedback
+  - [x] Message read receipts (checkmark icons)
 - [x] Dialer with gummy keypad
 - [x] Calls history tab
 - [x] Voicemail tab
@@ -127,9 +139,10 @@ Account Type: Trial (can own 1 number)
 ## Prioritized Backlog
 
 ### P0 (Blocking for Production)
+- [x] ~~Back arrow on Choose Area Code navigates to Dashboard~~ **FIXED 2026-03-04**
 - [ ] Upgrade to Twilio paid account for multiple numbers
 - [ ] Configure Twilio webhooks for incoming SMS/calls
-- [ ] Implement real-time message receiving
+- [x] ~~Implement real-time message receiving~~ **DONE 2026-03-04**
 
 ### P1 (Important)
 - [ ] WebRTC integration for actual VoIP calls
@@ -144,13 +157,14 @@ Account Type: Trial (can own 1 number)
 - [ ] Block contacts
 - [ ] Message search
 
-## React Native Mobile App (Not Yet Started)
-The web app is complete. For Google Play Store deployment:
-1. Create React Native project with Expo
-2. Port components from web app
-3. Add native features (biometrics, push)
-4. Test on Android emulator
-5. Generate signed APK
+## Recent Changes (2026-03-04)
+1. **P0 Bug Fix:** Back arrow on NumberSelection.js now navigates to `/dashboard` instead of using `navigate(-1)`
+2. **WebSocket Implementation:**
+   - Added ConnectionManager class in backend for managing WebSocket connections
+   - Created `/api/ws/chat` WebSocket endpoint for real-time messaging
+   - Added useWebSocket hook for frontend
+   - Updated Chat.js with real-time messaging, typing indicators, and connection status
+   - Updated MessagesTab.js with real-time indicator
 
 ## Technical Stack
 - **Frontend:** React.js 19, Tailwind CSS, Lucide React
@@ -158,9 +172,10 @@ The web app is complete. For Google Play Store deployment:
 - **Auth:** JWT + Emergent Google OAuth
 - **Payments:** Stripe (test key)
 - **Phone:** Twilio (LIVE - trial account)
+- **Real-time:** WebSockets (FastAPI WebSocket)
 - **Design:** Gummy UI 2026
 
 ## Test Credentials
-- Email: demo2@gummytext.com / test@gummytext.com
-- Password: password123
+- Email: test2@gummytext.com
+- Password: Test123456
 - Twilio Number: (681) 261-4963
