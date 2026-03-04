@@ -447,42 +447,125 @@ async def pin_status(user: dict = Depends(get_current_user)):
 
 # ===================== PHONE NUMBER ENDPOINTS =====================
 
+# Initialize Twilio client
+twilio_client = None
+if TWILIO_ENABLED:
+    try:
+        from twilio.rest import Client
+        from twilio.base.exceptions import TwilioRestException
+        twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        logger.info("Twilio client initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize Twilio client: {e}")
+
+class PhoneNumberPurchaseRequest(BaseModel):
+    phone_number: str
+    area_code: str
+    country: str = "US"
+
 @api_router.get("/phone-numbers/available")
 async def get_available_numbers(
     area_code: str,
     country: str = "US",
+    limit: int = 20,
     user: dict = Depends(get_current_user)
 ):
-    """Get available phone numbers for purchase (mocked if Twilio not configured)"""
+    """Get available phone numbers from Twilio for a specific area code"""
     numbers = []
+    error_message = None
     
-    if TWILIO_ENABLED:
+    if TWILIO_ENABLED and twilio_client:
         try:
-            from twilio.rest import Client
-            twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            logger.info(f"Searching Twilio for available numbers in area code {area_code}")
             
-            available = twilio_client.available_phone_numbers(country).local.list(
-                area_code=area_code,
-                limit=10
-            )
+            # First try: Query for SMS-enabled numbers (most useful for our app)
+            try:
+                available = twilio_client.available_phone_numbers(country).local.list(
+                    area_code=area_code,
+                    limit=limit,
+                    sms_enabled=True
+                )
+            except Exception:
+                available = []
+            
+            # If no SMS-enabled numbers, try voice-enabled only
+            if not available:
+                logger.info(f"No SMS-enabled numbers for {area_code}, trying voice-enabled")
+                try:
+                    available = twilio_client.available_phone_numbers(country).local.list(
+                        area_code=area_code,
+                        limit=limit,
+                        voice_enabled=True
+                    )
+                except Exception:
+                    available = []
+            
+            # If still no numbers, try without filters
+            if not available:
+                logger.info(f"Trying without filters for area code {area_code}")
+                try:
+                    available = twilio_client.available_phone_numbers(country).local.list(
+                        area_code=area_code,
+                        limit=limit
+                    )
+                except Exception:
+                    available = []
             
             for num in available:
+                # Format phone number nicely
+                phone = num.phone_number
+                if phone.startswith('+1') and len(phone) == 12:
+                    friendly = f"({phone[2:5]}) {phone[5:8]}-{phone[8:]}"
+                else:
+                    friendly = num.friendly_name or phone
+                
                 numbers.append({
                     "phone_number": num.phone_number,
-                    "friendly_name": num.friendly_name,
+                    "friendly_name": friendly,
                     "area_code": area_code,
                     "country": country,
+                    "locality": getattr(num, 'locality', None),
+                    "region": getattr(num, 'region', None),
                     "capabilities": {
                         "voice": num.capabilities.get("voice", False),
                         "sms": num.capabilities.get("sms", False),
-                        "mms": num.capabilities.get("mms", False)
-                    }
+                        "mms": num.capabilities.get("mms", False),
+                        "fax": num.capabilities.get("fax", False)
+                    },
+                    "is_real": True
                 })
+            
+            # Cache results in MongoDB for faster subsequent lookups
+            if numbers:
+                await db.available_numbers_cache.update_one(
+                    {"area_code": area_code, "country": country},
+                    {
+                        "$set": {
+                            "numbers": numbers,
+                            "cached_at": datetime.now(timezone.utc).isoformat(),
+                            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+                        }
+                    },
+                    upsert=True
+                )
+                
+            logger.info(f"Found {len(numbers)} available numbers for area code {area_code}")
+            
         except Exception as e:
-            logger.error(f"Twilio error: {e}")
+            error_message = str(e)
+            logger.error(f"Twilio error searching area code {area_code}: {e}")
+            
+            # Try to get cached results if API fails
+            cached = await db.available_numbers_cache.find_one(
+                {"area_code": area_code, "country": country},
+                {"_id": 0}
+            )
+            if cached and cached.get("numbers"):
+                numbers = cached["numbers"]
+                logger.info(f"Using {len(numbers)} cached numbers for area code {area_code}")
     
-    # Return mock numbers if Twilio not available or failed
-    if not numbers:
+    # Return mock numbers if Twilio not available
+    if not numbers and not TWILIO_ENABLED:
         for i in range(10):
             mock_number = generate_mock_phone_number(area_code)
             numbers.append({
@@ -493,48 +576,235 @@ async def get_available_numbers(
                 "capabilities": {
                     "voice": True,
                     "sms": True,
-                    "mms": True
+                    "mms": True,
+                    "fax": False
                 },
                 "is_mock": True
             })
     
-    return {"numbers": numbers, "twilio_enabled": TWILIO_ENABLED}
+    return {
+        "numbers": numbers,
+        "count": len(numbers),
+        "area_code": area_code,
+        "country": country,
+        "twilio_enabled": TWILIO_ENABLED,
+        "error": error_message
+    }
 
-@api_router.post("/phone-numbers/purchase", response_model=PhoneNumberResponse)
-async def purchase_phone_number(
-    request: PhoneNumberRequest,
+@api_router.get("/phone-numbers/search")
+async def search_available_numbers(
+    query: str,
+    country: str = "US",
+    limit: int = 20,
     user: dict = Depends(get_current_user)
 ):
-    """Purchase a phone number"""
-    # Check user's phone number limit (max 10)
+    """Search for available numbers by pattern (area code or contains)"""
+    numbers = []
+    error_message = None
+    
+    if TWILIO_ENABLED and twilio_client:
+        try:
+            # If query is 3 digits, treat as area code
+            if len(query) == 3 and query.isdigit():
+                available = twilio_client.available_phone_numbers(country).local.list(
+                    area_code=query,
+                    limit=limit,
+                    voice_enabled=True,
+                    sms_enabled=True
+                )
+            else:
+                # Search by pattern (contains)
+                available = twilio_client.available_phone_numbers(country).local.list(
+                    contains=query,
+                    limit=limit,
+                    voice_enabled=True,
+                    sms_enabled=True
+                )
+            
+            for num in available:
+                phone = num.phone_number
+                if phone.startswith('+1') and len(phone) == 12:
+                    friendly = f"({phone[2:5]}) {phone[5:8]}-{phone[8:]}"
+                    area_code = phone[2:5]
+                else:
+                    friendly = num.friendly_name or phone
+                    area_code = "N/A"
+                
+                numbers.append({
+                    "phone_number": num.phone_number,
+                    "friendly_name": friendly,
+                    "area_code": area_code,
+                    "country": country,
+                    "locality": getattr(num, 'locality', None),
+                    "region": getattr(num, 'region', None),
+                    "capabilities": {
+                        "voice": num.capabilities.get("voice", False),
+                        "sms": num.capabilities.get("sms", False),
+                        "mms": num.capabilities.get("mms", False),
+                        "fax": num.capabilities.get("fax", False)
+                    },
+                    "is_real": True
+                })
+                
+        except Exception as e:
+            error_message = str(e)
+            logger.error(f"Twilio search error: {e}")
+    
+    return {
+        "numbers": numbers,
+        "count": len(numbers),
+        "query": query,
+        "twilio_enabled": TWILIO_ENABLED,
+        "error": error_message
+    }
+
+@api_router.get("/phone-numbers/nearby")
+async def get_nearby_numbers(
+    limit: int = 10,
+    user: dict = Depends(get_current_user)
+):
+    """Get available numbers from various US area codes that have inventory"""
+    # Area codes known to have more availability
+    popular_codes = ["602", "385", "480", "623", "928", "520", "801", "435", "469", "972"]
+    all_numbers = []
+    
+    if TWILIO_ENABLED and twilio_client:
+        for area_code in popular_codes:
+            if len(all_numbers) >= limit:
+                break
+            try:
+                # Try to find SMS-enabled numbers first
+                available = twilio_client.available_phone_numbers("US").local.list(
+                    area_code=area_code,
+                    limit=3
+                )
+                
+                for num in available:
+                    phone = num.phone_number
+                    if phone.startswith('+1') and len(phone) == 12:
+                        friendly = f"({phone[2:5]}) {phone[5:8]}-{phone[8:]}"
+                    else:
+                        friendly = num.friendly_name or phone
+                    
+                    all_numbers.append({
+                        "phone_number": num.phone_number,
+                        "friendly_name": friendly,
+                        "area_code": area_code,
+                        "country": "US",
+                        "locality": getattr(num, 'locality', None),
+                        "region": getattr(num, 'region', None),
+                        "capabilities": {
+                            "voice": num.capabilities.get("voice", False),
+                            "sms": num.capabilities.get("sms", False),
+                            "mms": num.capabilities.get("mms", False)
+                        },
+                        "is_real": True
+                    })
+            except Exception as e:
+                logger.error(f"Error fetching numbers for {area_code}: {e}")
+                continue
+    
+    return {
+        "numbers": all_numbers[:limit],
+        "count": len(all_numbers[:limit]),
+        "twilio_enabled": TWILIO_ENABLED
+    }
+
+@api_router.get("/phone-numbers/twilio-account")
+async def get_twilio_account_numbers(
+    user: dict = Depends(get_current_user)
+):
+    """Get phone numbers already owned by the Twilio account"""
+    numbers = []
+    
+    if TWILIO_ENABLED and twilio_client:
+        try:
+            # Get all numbers owned by this Twilio account
+            owned_numbers = twilio_client.incoming_phone_numbers.list()
+            
+            for num in owned_numbers:
+                phone = num.phone_number
+                if phone.startswith('+1') and len(phone) == 12:
+                    friendly = f"({phone[2:5]}) {phone[5:8]}-{phone[8:]}"
+                    area_code = phone[2:5]
+                else:
+                    friendly = num.friendly_name or phone
+                    area_code = "N/A"
+                
+                numbers.append({
+                    "phone_number": num.phone_number,
+                    "friendly_name": friendly,
+                    "area_code": area_code,
+                    "twilio_sid": num.sid,
+                    "capabilities": {
+                        "voice": num.capabilities.get("voice", False),
+                        "sms": num.capabilities.get("sms", False),
+                        "mms": num.capabilities.get("mms", False)
+                    },
+                    "status": num.status,
+                    "is_owned": True
+                })
+                
+            logger.info(f"Found {len(numbers)} numbers owned by Twilio account")
+            
+        except Exception as e:
+            logger.error(f"Error fetching Twilio account numbers: {e}")
+    
+    return {
+        "numbers": numbers,
+        "count": len(numbers),
+        "twilio_enabled": TWILIO_ENABLED
+    }
+
+@api_router.post("/phone-numbers/add-existing")
+async def add_existing_twilio_number(
+    request: Request,
+    user: dict = Depends(get_current_user)
+):
+    """Add an existing Twilio number (already owned) to user's account"""
+    body = await request.json()
+    phone_number = body.get("phone_number")
+    twilio_sid = body.get("twilio_sid")
+    
+    if not phone_number:
+        raise HTTPException(status_code=400, detail="phone_number is required")
+    
+    # Check if number is already assigned to this user
+    existing = await db.phone_numbers.find_one({
+        "user_id": user["user_id"],
+        "phone_number": phone_number
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="You already have this number")
+    
+    # Check user's phone number limit
     user_numbers = await db.phone_numbers.count_documents({"user_id": user["user_id"]})
     if user_numbers >= 10:
         raise HTTPException(status_code=400, detail="Maximum 10 phone numbers allowed")
     
-    phone_number = None
+    # Verify the number exists in Twilio account
+    verified = False
+    actual_sid = twilio_sid
     
-    if TWILIO_ENABLED:
+    if TWILIO_ENABLED and twilio_client:
         try:
-            from twilio.rest import Client
-            twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-            
-            # Find and purchase a number
-            available = twilio_client.available_phone_numbers(request.country).local.list(
-                area_code=request.area_code,
-                limit=1
-            )
-            
-            if available:
-                purchased = twilio_client.incoming_phone_numbers.create(
-                    phone_number=available[0].phone_number
-                )
-                phone_number = purchased.phone_number
+            owned_numbers = twilio_client.incoming_phone_numbers.list(phone_number=phone_number)
+            if owned_numbers:
+                verified = True
+                actual_sid = owned_numbers[0].sid
+                logger.info(f"Verified ownership of {phone_number}")
+            else:
+                logger.warning(f"Number {phone_number} not found in Twilio account")
         except Exception as e:
-            logger.error(f"Twilio purchase error: {e}")
+            logger.error(f"Error verifying number ownership: {e}")
     
-    # Use mock number if Twilio not available
-    if not phone_number:
-        phone_number = generate_mock_phone_number(request.area_code)
+    # Format the number
+    if phone_number.startswith('+1') and len(phone_number) == 12:
+        friendly_name = f"({phone_number[2:5]}) {phone_number[5:8]}-{phone_number[8:]}"
+        area_code = phone_number[2:5]
+    else:
+        friendly_name = phone_number
+        area_code = "N/A"
     
     phone_id = f"phone_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc)
@@ -544,28 +814,148 @@ async def purchase_phone_number(
         "phone_id": phone_id,
         "user_id": user["user_id"],
         "phone_number": phone_number,
-        "friendly_name": f"({request.area_code}) {phone_number[5:8]}-{phone_number[8:]}",
-        "area_code": request.area_code,
-        "country": request.country,
+        "friendly_name": friendly_name,
+        "area_code": area_code,
+        "country": "US",
+        "twilio_sid": actual_sid,
         "capabilities": {"voice": True, "sms": True, "mms": True},
         "is_primary": is_primary,
-        "is_mock": not TWILIO_ENABLED,
+        "is_real": verified,
+        "status": "active",
         "created_at": now.isoformat()
     }
     
     await db.phone_numbers.insert_one(phone_doc)
     
+    return {
+        "phone_id": phone_id,
+        "phone_number": phone_number,
+        "friendly_name": friendly_name,
+        "area_code": area_code,
+        "country": "US",
+        "capabilities": phone_doc["capabilities"],
+        "is_primary": is_primary,
+        "verified": verified,
+        "created_at": now.isoformat()
+    }
+
+@api_router.post("/phone-numbers/purchase", response_model=PhoneNumberResponse)
+async def purchase_phone_number(
+    request: PhoneNumberPurchaseRequest,
+    user: dict = Depends(get_current_user)
+):
+    """Purchase a specific phone number from Twilio"""
+    # Check user's phone number limit (max 10)
+    user_numbers = await db.phone_numbers.count_documents({"user_id": user["user_id"]})
+    if user_numbers >= 10:
+        raise HTTPException(status_code=400, detail="Maximum 10 phone numbers allowed per account")
+    
+    phone_number = request.phone_number
+    purchased_sid = None
+    is_real = False
+    
+    if TWILIO_ENABLED and twilio_client:
+        try:
+            logger.info(f"Attempting to purchase number {phone_number} for user {user['user_id']}")
+            
+            # Purchase the number from Twilio
+            purchased = twilio_client.incoming_phone_numbers.create(
+                phone_number=phone_number,
+                friendly_name=f"GummyText - {user['email']}",
+                voice_url=None,  # Will configure webhooks later
+                sms_url=None
+            )
+            
+            purchased_sid = purchased.sid
+            phone_number = purchased.phone_number
+            is_real = True
+            
+            logger.info(f"Successfully purchased {phone_number} with SID {purchased_sid}")
+            
+        except Exception as e:
+            error_str = str(e)
+            logger.error(f"Twilio purchase error: {e}")
+            
+            # Check if number is no longer available
+            if "21422" in error_str or "not available" in error_str.lower():
+                raise HTTPException(
+                    status_code=409,
+                    detail="This number is no longer available. Please select another number."
+                )
+            elif "21401" in error_str or "invalid" in error_str.lower():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid phone number format. Please try another number."
+                )
+            # Check for trial account limitation
+            elif "trial" in error_str.lower() or "21656" in error_str:
+                raise HTTPException(
+                    status_code=402,
+                    detail="Trial accounts can only have one phone number. Please upgrade your Twilio account or use your existing Twilio number."
+                )
+            elif "20003" in error_str or "permission" in error_str.lower():
+                raise HTTPException(
+                    status_code=403,
+                    detail="Unable to purchase this number. Account permissions issue."
+                )
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to purchase number: {error_str}"
+                )
+    else:
+        # Mock purchase for testing
+        logger.info(f"Mock purchasing number {phone_number} (Twilio not enabled)")
+    
+    # Format the number
+    if phone_number.startswith('+1') and len(phone_number) == 12:
+        friendly_name = f"({phone_number[2:5]}) {phone_number[5:8]}-{phone_number[8:]}"
+        area_code = phone_number[2:5]
+    else:
+        friendly_name = phone_number
+        area_code = request.area_code
+    
+    phone_id = f"phone_{uuid.uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc)
+    is_primary = user_numbers == 0
+    
+    phone_doc = {
+        "phone_id": phone_id,
+        "user_id": user["user_id"],
+        "phone_number": phone_number,
+        "friendly_name": friendly_name,
+        "area_code": area_code,
+        "country": request.country,
+        "twilio_sid": purchased_sid,
+        "capabilities": {"voice": True, "sms": True, "mms": True},
+        "is_primary": is_primary,
+        "is_real": is_real,
+        "status": "active",
+        "purchased_at": now.isoformat(),
+        "created_at": now.isoformat()
+    }
+    
+    await db.phone_numbers.insert_one(phone_doc)
+    
+    # Deduct credits for number purchase if on free tier (optional business logic)
+    # await db.users.update_one(
+    #     {"user_id": user["user_id"]},
+    #     {"$inc": {"credits": -5}}
+    # )
+    
+    logger.info(f"Number {phone_number} assigned to user {user['user_id']}")
+    
     return PhoneNumberResponse(
         phone_id=phone_id,
         phone_number=phone_number,
-        friendly_name=phone_doc["friendly_name"],
-        area_code=request.area_code,
+        friendly_name=friendly_name,
+        area_code=area_code,
         country=request.country,
         capabilities=phone_doc["capabilities"],
         is_primary=is_primary,
         created_at=now.isoformat()
     )
-
+    
 @api_router.get("/phone-numbers", response_model=List[PhoneNumberResponse])
 async def get_user_phone_numbers(user: dict = Depends(get_current_user)):
     """Get user's phone numbers"""

@@ -212,35 +212,58 @@ class GummyTextAPITester:
             self.log("❌ No token available, skipping phone number tests")
             return None
         
-        # Get available numbers
+        # Test Twilio account numbers (key feature)
         success, response = self.run_test(
-            "Available Numbers",
+            "Twilio Account Numbers",
             "GET",
-            "/phone-numbers/available?area_code=555",
+            "/phone-numbers/twilio-account",
             200
         )
         
         if success:
             numbers = response.get('numbers', [])
-            self.log(f"   Found {len(numbers)} available numbers")
+            self.log(f"   Found {len(numbers)} owned Twilio numbers")
+            twilio_number = numbers[0] if numbers else None
             
-            # Purchase a number
-            purchase_success, purchase_response = self.run_test(
-                "Purchase Number",
-                "POST",
-                "/phone-numbers/purchase",
-                200,
-                {"area_code": "555", "country": "US"}
-            )
-            
-            if purchase_success:
-                phone_id = purchase_response.get('phone_id')
-                self.log(f"   Purchased number: {purchase_response.get('phone_number')}")
-                
-                # Get user's numbers
-                self.run_test("Get User Numbers", "GET", "/phone-numbers", 200)
-                
-                return phone_id
+            # Test add existing Twilio number if we have one
+            if twilio_number:
+                success, _ = self.run_test(
+                    "Add Existing Twilio Number",
+                    "POST",
+                    "/phone-numbers/add-existing",
+                    200,
+                    {
+                        "phone_number": twilio_number.get("phone_number"),
+                        "twilio_sid": twilio_number.get("twilio_sid")
+                    }
+                )
+        
+        # Test available numbers by area code (key feature)
+        success, response = self.run_test(
+            "Available Numbers by Area Code",
+            "GET",
+            "/phone-numbers/available?area_code=602",
+            200
+        )
+        
+        if success:
+            numbers = response.get('numbers', [])
+            self.log(f"   Found {len(numbers)} available numbers for 602")
+        
+        # Test nearby numbers (key feature)
+        success, response = self.run_test(
+            "Nearby Numbers",
+            "GET",
+            "/phone-numbers/nearby",
+            200
+        )
+        
+        if success:
+            numbers = response.get('numbers', [])
+            self.log(f"   Found {len(numbers)} nearby numbers")
+        
+        # Get user's numbers
+        self.run_test("Get User Numbers", "GET", "/phone-numbers", 200)
         
         return None
 
