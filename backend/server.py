@@ -1397,24 +1397,24 @@ async def get_subscription_plans():
     plans = [
         {
             "plan_id": "free",
-            "name": "Free",
+            "name": "Starter",
             "price": 0,
             "credits_per_month": 25,
-            "features": ["1 Phone Number", "25 Credits/Month", "Basic Support"]
+            "features": ["1 Phone Number", "25 Free Credits", "SMS & Voice Calls", "Basic Voicemail"]
+        },
+        {
+            "plan_id": "personal",
+            "name": "Personal",
+            "price": 4.99,
+            "credits_per_month": -1,
+            "features": ["1 Phone Number", "Unlimited Texts", "Unlimited Calls", "Voicemail Transcription", "No Ads", "Priority Support"]
         },
         {
             "plan_id": "pro",
             "name": "Pro",
             "price": 9.99,
-            "credits_per_month": 500,
-            "features": ["5 Phone Numbers", "500 Credits/Month", "Priority Support", "Voicemail Transcription"]
-        },
-        {
-            "plan_id": "unlimited",
-            "name": "Unlimited",
-            "price": 19.99,
             "credits_per_month": -1,
-            "features": ["10 Phone Numbers", "Unlimited Usage", "24/7 Support", "All Features"]
+            "features": ["5 Phone Numbers", "Unlimited Everything", "Team Features", "API Access", "24/7 Support", "Custom Voicemail"]
         }
     ]
     return {"plans": plans}
