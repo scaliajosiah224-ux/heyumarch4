@@ -4,6 +4,7 @@ import axios from 'axios';
 import { Toaster } from 'sonner';
 
 // Pages
+import LandingPage from './pages/LandingPage';
 import Onboarding from './pages/Onboarding';
 import Auth from './pages/Auth';
 import AuthCallback from './pages/AuthCallback';
@@ -151,7 +152,7 @@ const AppRouter = () => {
   return (
     <Routes>
       <Route path="/" element={
-        user ? <Navigate to="/dashboard" replace /> : <Onboarding />
+        user ? <Navigate to="/dashboard" replace /> : <LandingPage />
       } />
       <Route path="/onboarding" element={<Onboarding />} />
       <Route path="/auth" element={
