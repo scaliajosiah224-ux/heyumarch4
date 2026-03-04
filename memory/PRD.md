@@ -2,8 +2,8 @@
 
 ## Project Overview
 **App Name:** GummyText - Second Phone Number App  
-**Version:** 1.0.0 MVP  
-**Last Updated:** 2026-03-03
+**Version:** 1.1.0 (Twilio Integration Complete)  
+**Last Updated:** 2026-03-04
 
 ## Original Problem Statement
 Build a TextNow/Caddy clone - a complete system that includes both a mobile app (for iOS/Android) and web application that functions exactly like TextNow and Caddy. The app gives users a second real phone number for calls, texts, and voicemail over WiFi/data.
@@ -28,12 +28,18 @@ Build a TextNow/Caddy clone - a complete system that includes both a mobile app 
 
 ## What's Been Implemented ✅
 
-### Backend (FastAPI + MongoDB)
+### Backend (FastAPI + MongoDB) - COMPLETE
 - [x] User registration with email/password
 - [x] User login with JWT tokens
 - [x] Google OAuth integration (Emergent Auth)
 - [x] Session management with cookies
-- [x] Phone number provisioning API (mock mode)
+- [x] **LIVE Twilio Integration:**
+  - [x] /api/phone-numbers/twilio-account - Get owned numbers
+  - [x] /api/phone-numbers/add-existing - Add owned Twilio number
+  - [x] /api/phone-numbers/available - Search by area code
+  - [x] /api/phone-numbers/nearby - Get available numbers
+  - [x] /api/phone-numbers/search - Pattern search
+  - [x] /api/phone-numbers/purchase - Buy new number
 - [x] Phone number management (primary, release)
 - [x] SMS sending/receiving API
 - [x] Message conversations/threads
@@ -46,11 +52,15 @@ Build a TextNow/Caddy clone - a complete system that includes both a mobile app 
 - [x] Stripe checkout integration
 - [x] Payment webhook handling
 
-### Frontend (React.js)
+### Frontend (React.js) - COMPLETE
 - [x] Onboarding flow (3 screens)
 - [x] Authentication (Login/Register/Google)
-- [x] Area code selection
-- [x] Phone number selection
+- [x] **Enhanced Number Selection:**
+  - [x] "Your Twilio Numbers" section (owned numbers)
+  - [x] "Numbers Available Now" from Twilio inventory
+  - [x] Area code search with filtering
+  - [x] Capability badges (Voice, SMS, MMS)
+  - [x] Confirmation screen with details
 - [x] Dashboard with tabs
 - [x] Messages tab with conversations
 - [x] Individual chat screen
@@ -63,7 +73,7 @@ Build a TextNow/Caddy clone - a complete system that includes both a mobile app 
 - [x] Bottom navigation
 - [x] Beautiful 2026 gummy design
 
-### Design System
+### Design System - COMPLETE
 - [x] Dark theme with purple gradients
 - [x] 3D gummy-style buttons
 - [x] Glass panel effects
@@ -71,52 +81,51 @@ Build a TextNow/Caddy clone - a complete system that includes both a mobile app 
 - [x] Nunito/Quicksand/Fredoka fonts
 - [x] Micro-animations
 
+## Twilio Configuration
+```
+Account SID: AC8dc5a79d40c743d7a8252e4faed3558f
+Phone Number: +16812614963 (681) 261-4963
+Capabilities: Voice ✓ SMS ✓ MMS ✓
+Account Type: Trial (can own 1 number)
+```
+
 ## Prioritized Backlog
 
-### P0 (Blocking)
-- [ ] Connect real Twilio credentials for live phone numbers
-- [ ] WebRTC integration for actual VoIP calls
-- [ ] Real-time message receiving via webhooks
+### P0 (Blocking for Production)
+- [ ] Upgrade to Twilio paid account for multiple numbers
+- [ ] Configure Twilio webhooks for incoming SMS/calls
+- [ ] Implement real-time message receiving
 
 ### P1 (Important)
+- [ ] WebRTC integration for actual VoIP calls
 - [ ] Voicemail transcription (OpenAI Whisper)
-- [ ] MMS media upload/display
 - [ ] Push notifications
-- [ ] Contact syncing from phone
+- [ ] Contact syncing
 
 ### P2 (Nice to Have)
+- [ ] MMS media upload/display
 - [ ] Call recording
 - [ ] Spam filtering
 - [ ] Block contacts
 - [ ] Message search
-- [ ] Custom ringtones
-- [ ] Dark/Light theme toggle
 
 ## React Native Mobile App (Not Yet Started)
-The web app is complete and functional. For Google Play Store deployment:
+The web app is complete. For Google Play Store deployment:
 1. Create React Native project with Expo
 2. Port components from web app
-3. Add native features (biometrics, push notifications)
+3. Add native features (biometrics, push)
 4. Test on Android emulator
-5. Generate signed APK for Play Store
+5. Generate signed APK
 
 ## Technical Stack
 - **Frontend:** React.js 19, Tailwind CSS, Lucide React
 - **Backend:** Python FastAPI, MongoDB, Motor
 - **Auth:** JWT + Emergent Google OAuth
-- **Payments:** Stripe (test key configured)
-- **Phone:** Twilio (MOCKED - awaiting credentials)
+- **Payments:** Stripe (test key)
+- **Phone:** Twilio (LIVE - trial account)
 - **Design:** Gummy UI 2026
 
-## Next Tasks
-1. User provides Twilio credentials
-2. Switch from mock to real phone numbers
-3. Implement WebRTC for live calls
-4. Add push notifications
-5. Create React Native mobile version
-
 ## Test Credentials
-- Email: test@gummytext.com
+- Email: demo2@gummytext.com / test@gummytext.com
 - Password: password123
-- Credits: 25 (initial)
-- Phone: (415) area code mock number
+- Twilio Number: (681) 261-4963
