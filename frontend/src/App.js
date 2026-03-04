@@ -15,6 +15,9 @@ import Settings from './pages/Settings';
 import Purchase from './pages/Purchase';
 import PinLock from './pages/PinLock';
 
+// Components
+import { AchievementProvider } from './components/AchievementProvider';
+
 import './App.css';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -197,20 +200,22 @@ function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <div className="App min-h-screen">
-          <AppRouter />
-          <Toaster 
-            position="top-center" 
-            toastOptions={{
-              style: {
-                background: 'rgba(30, 11, 43, 0.9)',
-                border: '1px solid rgba(255, 255, 255, 0.1)',
-                color: 'white',
-                backdropFilter: 'blur(12px)'
-              }
-            }}
-          />
-        </div>
+        <AchievementProvider>
+          <div className="App min-h-screen">
+            <AppRouter />
+            <Toaster 
+              position="top-center" 
+              toastOptions={{
+                style: {
+                  background: 'rgba(30, 11, 43, 0.9)',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  color: 'white',
+                  backdropFilter: 'blur(12px)'
+                }
+              }}
+            />
+          </div>
+        </AchievementProvider>
       </AuthProvider>
     </BrowserRouter>
   );

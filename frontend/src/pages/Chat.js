@@ -1,22 +1,37 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Send, Image, Phone, MoreVertical, Check, CheckCheck, Wifi, WifiOff } from 'lucide-react';
+import { 
+  ArrowLeft, Send, Image, Phone, MoreVertical, Check, CheckCheck, 
+  Wifi, WifiOff, Smile, Mic, X, Play, Pause, Video
+} from 'lucide-react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { API } from '../App';
 import useWebSocket from '../hooks/useWebSocket';
+import { useAchievements } from '../components/AchievementProvider';
+
+// Reaction emojis
+const REACTIONS = ['❤️', '😂', '😮', '😢', '😡', '👍', '👎', '🔥'];
 
 const Chat = () => {
   const { contactNumber } = useParams();
   const navigate = useNavigate();
+  const { triggerAchievement, checkMessageCount } = useAchievements();
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [typingTimeout, setTypingTimeout] = useState(null);
+  const [showReactions, setShowReactions] = useState(null); // message_id of message showing reactions
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const recordingIntervalRef = useRef(null);
   
   // WebSocket connection
   const {
@@ -33,10 +48,12 @@ const Chat = () => {
     const handleMessageSent = (data) => {
       if (data.message && data.message.to_number === contactNumber) {
         setMessages(prev => {
-          // Check if message already exists (avoid duplicates)
           const exists = prev.some(m => m.message_id === data.message.message_id);
           if (exists) return prev;
-          return [...prev, data.message];
+          const newMessages = [...prev, data.message];
+          const outboundCount = newMessages.filter(m => m.direction === 'outbound').length;
+          checkMessageCount(outboundCount);
+          return newMessages;
         });
         setSending(false);
       }
@@ -45,7 +62,6 @@ const Chat = () => {
     const handleTyping = (data) => {
       if (data.contact_number === contactNumber) {
         setIsTyping(true);
-        // Clear typing indicator after 3 seconds
         setTimeout(() => setIsTyping(false), 3000);
       }
     };
@@ -69,7 +85,7 @@ const Chat = () => {
       cleanup2();
       cleanup3();
     };
-  }, [addMessageHandler, contactNumber, navigate]);
+  }, [addMessageHandler, contactNumber, navigate, checkMessageCount]);
 
   useEffect(() => {
     fetchMessages();
@@ -80,20 +96,16 @@ const Chat = () => {
     scrollToBottom();
   }, [messages]);
 
-  // Handle typing indicator
   const handleInputChange = useCallback((e) => {
     setNewMessage(e.target.value);
     
-    // Send typing indicator via WebSocket
     if (isConnected && e.target.value) {
       sendTyping(contactNumber);
       
-      // Clear previous timeout
       if (typingTimeout) {
         clearTimeout(typingTimeout);
       }
       
-      // Stop typing indicator after 2 seconds of no input
       const timeout = setTimeout(() => {
         sendStopTyping(contactNumber);
       }, 2000);
@@ -108,7 +120,6 @@ const Chat = () => {
       });
       setMessages(response.data.messages);
       
-      // Mark messages as read
       response.data.messages
         .filter(m => m.direction === 'inbound' && !m.is_read)
         .forEach(m => markAsRead(m.message_id));
@@ -131,11 +142,9 @@ const Chat = () => {
     setNewMessage('');
     setSending(true);
 
-    // Try WebSocket first for real-time experience
     if (isConnected) {
       const sent = sendChatMessage(contactNumber, messageText);
       if (sent) {
-        // Optimistically add the message
         const optimisticMessage = {
           message_id: `temp_${Date.now()}`,
           from_number: 'You',
@@ -151,7 +160,6 @@ const Chat = () => {
       }
     }
 
-    // Fall back to REST API if WebSocket fails
     try {
       const response = await axios.post(`${API}/messages/send`, {
         to_number: contactNumber,
@@ -161,7 +169,6 @@ const Chat = () => {
       });
 
       setMessages(prev => {
-        // Remove optimistic message if exists and add real one
         const filtered = prev.filter(m => !m.message_id.startsWith('temp_'));
         return [...filtered, response.data];
       });
@@ -172,11 +179,155 @@ const Chat = () => {
       } else {
         toast.error('Failed to send message');
       }
-      // Remove optimistic message on error
       setMessages(prev => prev.filter(m => !m.message_id.startsWith('temp_')));
     } finally {
       setSending(false);
     }
+  };
+
+  // Add reaction to message
+  const addReaction = async (messageId, emoji) => {
+    setMessages(prev => prev.map(msg => {
+      if (msg.message_id === messageId) {
+        const reactions = msg.reactions || [];
+        const existingIndex = reactions.findIndex(r => r.emoji === emoji);
+        if (existingIndex >= 0) {
+          // Remove if already reacted with same emoji
+          return { ...msg, reactions: reactions.filter((_, i) => i !== existingIndex) };
+        } else {
+          // Add new reaction
+          return { ...msg, reactions: [...reactions, { emoji, user: 'me' }] };
+        }
+      }
+      return msg;
+    }));
+    setShowReactions(null);
+
+    // Save reaction to backend
+    try {
+      await axios.post(`${API}/messages/${messageId}/react`, { emoji }, { withCredentials: true });
+    } catch (error) {
+      console.error('Failed to save reaction:', error);
+    }
+  };
+
+  // Handle file attachment
+  const handleFileSelect = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const maxSize = 10 * 1024 * 1024; // 10MB
+    if (file.size > maxSize) {
+      toast.error('File too large. Max 10MB allowed.');
+      return;
+    }
+
+    setShowAttachMenu(false);
+    setSending(true);
+
+    // Create optimistic message with media
+    const optimisticMessage = {
+      message_id: `temp_${Date.now()}`,
+      from_number: 'You',
+      to_number: contactNumber,
+      body: file.type.startsWith('image/') ? '📷 Photo' : file.type.startsWith('video/') ? '🎬 Video' : '📎 File',
+      media_url: URL.createObjectURL(file),
+      media_type: file.type,
+      direction: 'outbound',
+      status: 'sending',
+      created_at: new Date().toISOString()
+    };
+    setMessages(prev => [...prev, optimisticMessage]);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('to_number', contactNumber);
+
+      const response = await axios.post(`${API}/messages/send-media`, formData, {
+        withCredentials: true,
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+
+      setMessages(prev => {
+        const filtered = prev.filter(m => !m.message_id.startsWith('temp_'));
+        return [...filtered, response.data];
+      });
+    } catch (error) {
+      toast.error('Failed to send media');
+      setMessages(prev => prev.filter(m => !m.message_id.startsWith('temp_')));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  // Voice recording
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      const chunks = [];
+
+      mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+      mediaRecorder.onstop = async () => {
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        stream.getTracks().forEach(track => track.stop());
+        
+        // Send voice message
+        setSending(true);
+        const optimisticMessage = {
+          message_id: `temp_${Date.now()}`,
+          from_number: 'You',
+          to_number: contactNumber,
+          body: `🎤 Voice message (${recordingTime}s)`,
+          media_url: URL.createObjectURL(blob),
+          media_type: 'audio/webm',
+          direction: 'outbound',
+          status: 'sending',
+          created_at: new Date().toISOString()
+        };
+        setMessages(prev => [...prev, optimisticMessage]);
+        
+        // In production, upload to backend
+        setTimeout(() => {
+          setMessages(prev => prev.map(m => 
+            m.message_id === optimisticMessage.message_id 
+              ? { ...m, status: 'sent' } 
+              : m
+          ));
+          setSending(false);
+        }, 1000);
+      };
+
+      mediaRecorderRef.current = mediaRecorder;
+      mediaRecorder.start();
+      setIsRecording(true);
+      setRecordingTime(0);
+
+      recordingIntervalRef.current = setInterval(() => {
+        setRecordingTime(prev => prev + 1);
+      }, 1000);
+    } catch (error) {
+      toast.error('Microphone access denied');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      clearInterval(recordingIntervalRef.current);
+    }
+  };
+
+  const cancelRecording = () => {
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current = null;
+    }
+    setIsRecording(false);
+    setRecordingTime(0);
+    clearInterval(recordingIntervalRef.current);
   };
 
   const formatTime = (dateString) => {
@@ -203,6 +354,44 @@ const Chat = () => {
     return <Check className="w-3 h-3 text-white/50" />;
   };
 
+  // Render media content
+  const renderMedia = (msg) => {
+    if (!msg.media_url) return null;
+
+    if (msg.media_type?.startsWith('image/')) {
+      return (
+        <img 
+          src={msg.media_url} 
+          alt="Shared media" 
+          className="max-w-full rounded-xl mb-2 cursor-pointer hover:opacity-90"
+          onClick={() => window.open(msg.media_url, '_blank')}
+        />
+      );
+    }
+
+    if (msg.media_type?.startsWith('video/')) {
+      return (
+        <video 
+          src={msg.media_url} 
+          controls 
+          className="max-w-full rounded-xl mb-2"
+        />
+      );
+    }
+
+    if (msg.media_type?.startsWith('audio/')) {
+      return (
+        <audio 
+          src={msg.media_url} 
+          controls 
+          className="w-full mb-2"
+        />
+      );
+    }
+
+    return null;
+  };
+
   return (
     <div data-testid="chat-screen" className="min-h-screen flex flex-col">
       {/* Header */}
@@ -219,7 +408,6 @@ const Chat = () => {
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-white font-bold">{formatContactNumber(contactNumber)}</h1>
-                {/* Connection status indicator */}
                 {isConnected ? (
                   <Wifi className="w-3 h-3 text-green-400" title="Real-time connected" />
                 ) : (
@@ -238,7 +426,15 @@ const Chat = () => {
           
           <div className="flex items-center gap-2">
             <button
+              data-testid="video-call-btn"
+              onClick={() => toast.info('Video calling coming soon!')}
+              className="w-10 h-10 rounded-full glass-panel flex items-center justify-center"
+            >
+              <Video className="w-5 h-5 text-fuchsia-400" />
+            </button>
+            <button
               data-testid="call-btn"
+              onClick={() => toast.info('Voice calling coming soon!')}
               className="w-10 h-10 rounded-full glass-panel flex items-center justify-center"
             >
               <Phone className="w-5 h-5 text-cyan-400" />
@@ -275,19 +471,59 @@ const Chat = () => {
                 className={`flex ${msg.direction === 'outbound' ? 'justify-end' : 'justify-start'}`}
               >
                 <div
-                  className={`max-w-[80%] px-4 py-3 ${
+                  className={`relative max-w-[80%] px-4 py-3 ${
                     msg.direction === 'outbound'
                       ? 'message-bubble-sent'
                       : 'message-bubble-received'
                   } ${msg.status === 'sending' ? 'opacity-70' : ''}`}
+                  onDoubleClick={() => setShowReactions(msg.message_id)}
                 >
+                  {/* Media content */}
+                  {renderMedia(msg)}
+                  
                   <p className="text-white">{msg.body}</p>
+                  
+                  {/* Reactions display */}
+                  {msg.reactions && msg.reactions.length > 0 && (
+                    <div className="flex gap-1 mt-2 flex-wrap">
+                      {msg.reactions.map((reaction, i) => (
+                        <span 
+                          key={i}
+                          className="text-sm bg-white/10 rounded-full px-2 py-0.5"
+                        >
+                          {reaction.emoji}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  
                   <div className={`flex items-center gap-1 mt-1 ${
                     msg.direction === 'outbound' ? 'justify-end' : 'justify-start'
                   }`}>
                     <span className="text-white/50 text-xs">{formatTime(msg.created_at)}</span>
                     {msg.direction === 'outbound' && getStatusIcon(msg)}
                   </div>
+
+                  {/* Reaction picker */}
+                  {showReactions === msg.message_id && (
+                    <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-[#1e0b2b] rounded-full px-2 py-1 flex gap-1 shadow-xl border border-white/10 animate-pop-in z-10">
+                      {REACTIONS.map(emoji => (
+                        <button
+                          key={emoji}
+                          onClick={() => addReaction(msg.message_id, emoji)}
+                          className="w-8 h-8 flex items-center justify-center hover:scale-125 transition-transform text-lg"
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                      <button
+                        onClick={() => setShowReactions(null)}
+                        className="w-8 h-8 flex items-center justify-center text-white/50 hover:text-white"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -310,41 +546,132 @@ const Chat = () => {
         )}
       </main>
 
-      {/* Input */}
-      <div className="sticky bottom-0 p-4 glass-panel-light">
-        <form onSubmit={sendMessage} className="flex items-center gap-3">
+      {/* Attachment menu */}
+      {showAttachMenu && (
+        <div className="absolute bottom-20 left-4 right-4 glass-panel p-4 grid grid-cols-4 gap-4 animate-slide-up z-20">
           <button
-            type="button"
-            data-testid="attach-btn"
-            className="w-10 h-10 rounded-full glass-panel flex items-center justify-center flex-shrink-0"
+            onClick={() => fileInputRef.current?.click()}
+            className="flex flex-col items-center gap-2"
           >
-            <Image className="w-5 h-5 text-white/70" />
+            <div className="w-12 h-12 rounded-full bg-fuchsia-500/20 flex items-center justify-center">
+              <Image className="w-6 h-6 text-fuchsia-400" />
+            </div>
+            <span className="text-white/70 text-xs">Photo</span>
           </button>
-          
-          <input
-            ref={inputRef}
-            data-testid="message-input"
-            type="text"
-            placeholder="Type a message..."
-            value={newMessage}
-            onChange={handleInputChange}
-            className="flex-1 gummy-input"
-          />
-          
           <button
-            type="submit"
-            data-testid="send-btn"
-            disabled={!newMessage.trim() || sending}
-            className="w-12 h-12 gummy-btn flex items-center justify-center flex-shrink-0 disabled:opacity-50"
+            onClick={() => toast.info('GIF support coming soon!')}
+            className="flex flex-col items-center gap-2"
           >
-            {sending ? (
-              <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-            ) : (
+            <div className="w-12 h-12 rounded-full bg-cyan-500/20 flex items-center justify-center">
+              <span className="text-cyan-400 font-bold text-sm">GIF</span>
+            </div>
+            <span className="text-white/70 text-xs">GIF</span>
+          </button>
+          <button
+            onClick={() => {
+              setShowAttachMenu(false);
+              startRecording();
+            }}
+            className="flex flex-col items-center gap-2"
+          >
+            <div className="w-12 h-12 rounded-full bg-green-500/20 flex items-center justify-center">
+              <Mic className="w-6 h-6 text-green-400" />
+            </div>
+            <span className="text-white/70 text-xs">Voice</span>
+          </button>
+          <button
+            onClick={() => toast.info('Video coming soon!')}
+            className="flex flex-col items-center gap-2"
+          >
+            <div className="w-12 h-12 rounded-full bg-amber-500/20 flex items-center justify-center">
+              <Video className="w-6 h-6 text-amber-400" />
+            </div>
+            <span className="text-white/70 text-xs">Video</span>
+          </button>
+        </div>
+      )}
+
+      {/* Recording UI */}
+      {isRecording && (
+        <div className="sticky bottom-0 p-4 glass-panel-light">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={cancelRecording}
+              className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center"
+            >
+              <X className="w-5 h-5 text-red-400" />
+            </button>
+            <div className="flex-1 flex items-center gap-3">
+              <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />
+              <span className="text-white font-medium">Recording... {recordingTime}s</span>
+            </div>
+            <button
+              onClick={stopRecording}
+              className="w-12 h-12 gummy-btn flex items-center justify-center"
+            >
               <Send className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Input */}
+      {!isRecording && (
+        <div className="sticky bottom-0 p-4 glass-panel-light">
+          <form onSubmit={sendMessage} className="flex items-center gap-3">
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileSelect}
+              accept="image/*,video/*"
+              className="hidden"
+            />
+            
+            <button
+              type="button"
+              data-testid="attach-btn"
+              onClick={() => setShowAttachMenu(!showAttachMenu)}
+              className="w-10 h-10 rounded-full glass-panel flex items-center justify-center flex-shrink-0"
+            >
+              <Image className="w-5 h-5 text-white/70" />
+            </button>
+            
+            <input
+              ref={inputRef}
+              data-testid="message-input"
+              type="text"
+              placeholder="Type a message..."
+              value={newMessage}
+              onChange={handleInputChange}
+              className="flex-1 gummy-input"
+            />
+
+            {/* Voice message button */}
+            {!newMessage.trim() && (
+              <button
+                type="button"
+                onClick={startRecording}
+                className="w-10 h-10 rounded-full glass-panel flex items-center justify-center flex-shrink-0"
+              >
+                <Mic className="w-5 h-5 text-fuchsia-400" />
+              </button>
             )}
-          </button>
-        </form>
-      </div>
+            
+            <button
+              type="submit"
+              data-testid="send-btn"
+              disabled={!newMessage.trim() || sending}
+              className="w-12 h-12 gummy-btn flex items-center justify-center flex-shrink-0 disabled:opacity-50"
+            >
+              {sending ? (
+                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+              ) : (
+                <Send className="w-5 h-5" />
+              )}
+            </button>
+          </form>
+        </div>
+      )}
     </div>
   );
 };

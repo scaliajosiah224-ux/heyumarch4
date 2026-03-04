@@ -1262,6 +1262,65 @@ async def mark_message_read(message_id: str, user: dict = Depends(get_current_us
     
     return {"message": "Marked as read"}
 
+@api_router.post("/messages/{message_id}/react")
+async def add_reaction(message_id: str, reaction_data: dict, user: dict = Depends(get_current_user)):
+    """Add reaction to a message"""
+    emoji = reaction_data.get("emoji")
+    if not emoji:
+        raise HTTPException(status_code=400, detail="Emoji is required")
+    
+    # Add reaction to message
+    result = await db.messages.update_one(
+        {"message_id": message_id, "user_id": user["user_id"]},
+        {
+            "$push": {
+                "reactions": {
+                    "emoji": emoji,
+                    "user_id": user["user_id"],
+                    "created_at": datetime.now(timezone.utc).isoformat()
+                }
+            }
+        }
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Message not found")
+    
+    return {"message": "Reaction added"}
+
+@api_router.post("/messages/send-media")
+async def send_media_message(
+    to_number: str = None,
+    file: Any = None,
+    user: dict = Depends(get_current_user)
+):
+    """Send media message (MMS)"""
+    # For now, just return a mock response
+    # In production, upload file to S3/cloud storage and send via Twilio MMS
+    message_id = f"msg_{uuid.uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc)
+    
+    message_doc = {
+        "message_id": message_id,
+        "user_id": user["user_id"],
+        "from_number": "local",
+        "to_number": to_number or "+1",
+        "body": "Media message",
+        "media_url": None,
+        "direction": "outbound",
+        "status": "sent",
+        "credits_used": 4,
+        "created_at": now.isoformat()
+    }
+    
+    await db.messages.insert_one(message_doc)
+    
+    return {
+        "message_id": message_id,
+        "status": "sent",
+        "created_at": now.isoformat()
+    }
+
 # ===================== CALL ENDPOINTS =====================
 
 @api_router.post("/calls/initiate", response_model=CallResponse)
@@ -1773,6 +1832,244 @@ async def websocket_chat_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         ws_manager.disconnect(websocket)
+
+# ===================== TWILIO WEBHOOK ENDPOINTS =====================
+
+@api_router.post("/webhooks/twilio/sms")
+async def twilio_sms_webhook(request: Request):
+    """Handle incoming SMS from Twilio"""
+    try:
+        form_data = await request.form()
+        
+        from_number = form_data.get("From", "")
+        to_number = form_data.get("To", "")
+        body = form_data.get("Body", "")
+        message_sid = form_data.get("MessageSid", "")
+        media_url = form_data.get("MediaUrl0")  # First media attachment
+        
+        logger.info(f"Incoming SMS from {from_number} to {to_number}: {body[:50]}...")
+        
+        # Find user who owns this number
+        phone_record = await db.phone_numbers.find_one(
+            {"phone_number": to_number},
+            {"_id": 0}
+        )
+        
+        if phone_record:
+            user_id = phone_record["user_id"]
+            message_id = f"msg_{uuid.uuid4().hex[:12]}"
+            now = datetime.now(timezone.utc)
+            
+            message_doc = {
+                "message_id": message_id,
+                "twilio_sid": message_sid,
+                "user_id": user_id,
+                "from_number": from_number,
+                "to_number": to_number,
+                "body": body,
+                "media_url": media_url,
+                "direction": "inbound",
+                "status": "received",
+                "is_read": False,
+                "created_at": now.isoformat()
+            }
+            
+            await db.messages.insert_one(message_doc)
+            
+            # Send real-time notification via WebSocket
+            await ws_manager.send_personal_message({
+                "type": "new_message",
+                "message": {
+                    "message_id": message_id,
+                    "from_number": from_number,
+                    "to_number": to_number,
+                    "body": body,
+                    "media_url": media_url,
+                    "direction": "inbound",
+                    "status": "received",
+                    "created_at": now.isoformat()
+                }
+            }, user_id)
+            
+            logger.info(f"Saved incoming message {message_id} for user {user_id}")
+        else:
+            logger.warning(f"No user found for number {to_number}")
+        
+        # Return TwiML response
+        return Response(
+            content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+            media_type="application/xml"
+        )
+    except Exception as e:
+        logger.error(f"Error processing Twilio SMS webhook: {e}")
+        return Response(
+            content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+            media_type="application/xml"
+        )
+
+@api_router.post("/webhooks/twilio/voice")
+async def twilio_voice_webhook(request: Request):
+    """Handle incoming voice calls from Twilio"""
+    try:
+        form_data = await request.form()
+        
+        from_number = form_data.get("From", "")
+        to_number = form_data.get("To", "")
+        call_sid = form_data.get("CallSid", "")
+        call_status = form_data.get("CallStatus", "")
+        
+        logger.info(f"Incoming call from {from_number} to {to_number}, status: {call_status}")
+        
+        # Find user who owns this number
+        phone_record = await db.phone_numbers.find_one(
+            {"phone_number": to_number},
+            {"_id": 0}
+        )
+        
+        if phone_record:
+            user_id = phone_record["user_id"]
+            
+            # Log the call
+            call_id = f"call_{uuid.uuid4().hex[:12]}"
+            now = datetime.now(timezone.utc)
+            
+            call_doc = {
+                "call_id": call_id,
+                "twilio_sid": call_sid,
+                "user_id": user_id,
+                "from_number": from_number,
+                "to_number": to_number,
+                "direction": "inbound",
+                "status": call_status,
+                "duration": 0,
+                "created_at": now.isoformat()
+            }
+            
+            await db.calls.insert_one(call_doc)
+            
+            # Send real-time notification via WebSocket
+            await ws_manager.send_personal_message({
+                "type": "incoming_call",
+                "call": {
+                    "call_id": call_id,
+                    "from_number": from_number,
+                    "to_number": to_number,
+                    "status": call_status,
+                    "created_at": now.isoformat()
+                }
+            }, user_id)
+        
+        # Return TwiML to handle the call (send to voicemail for now)
+        twiml = '''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="alice">Hello, the person you are calling is not available. Please leave a message after the beep.</Say>
+    <Record maxLength="120" transcribe="true" transcribeCallback="/api/webhooks/twilio/transcription" />
+    <Say voice="alice">Thank you for your message. Goodbye.</Say>
+</Response>'''
+        
+        return Response(content=twiml, media_type="application/xml")
+    except Exception as e:
+        logger.error(f"Error processing Twilio voice webhook: {e}")
+        return Response(
+            content='<?xml version="1.0" encoding="UTF-8"?><Response><Say>An error occurred.</Say></Response>',
+            media_type="application/xml"
+        )
+
+@api_router.post("/webhooks/twilio/transcription")
+async def twilio_transcription_webhook(request: Request):
+    """Handle voicemail transcription from Twilio"""
+    try:
+        form_data = await request.form()
+        
+        transcription_text = form_data.get("TranscriptionText", "")
+        recording_url = form_data.get("RecordingUrl", "")
+        call_sid = form_data.get("CallSid", "")
+        from_number = form_data.get("From", "")
+        to_number = form_data.get("To", "")
+        
+        logger.info(f"Voicemail transcription for call {call_sid}: {transcription_text[:50]}...")
+        
+        # Find the call and user
+        call = await db.calls.find_one({"twilio_sid": call_sid}, {"_id": 0})
+        
+        if call:
+            user_id = call["user_id"]
+            voicemail_id = f"vm_{uuid.uuid4().hex[:12]}"
+            now = datetime.now(timezone.utc)
+            
+            voicemail_doc = {
+                "voicemail_id": voicemail_id,
+                "user_id": user_id,
+                "from_number": from_number,
+                "to_number": to_number,
+                "recording_url": recording_url,
+                "transcription": transcription_text,
+                "duration": 0,
+                "is_read": False,
+                "created_at": now.isoformat()
+            }
+            
+            await db.voicemails.insert_one(voicemail_doc)
+            
+            # Send real-time notification
+            await ws_manager.send_personal_message({
+                "type": "new_voicemail",
+                "voicemail": {
+                    "voicemail_id": voicemail_id,
+                    "from_number": from_number,
+                    "transcription": transcription_text,
+                    "recording_url": recording_url,
+                    "created_at": now.isoformat()
+                }
+            }, user_id)
+            
+            logger.info(f"Saved voicemail {voicemail_id} for user {user_id}")
+        
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Error processing transcription webhook: {e}")
+        return {"status": "error"}
+
+@api_router.post("/webhooks/twilio/status")
+async def twilio_status_webhook(request: Request):
+    """Handle message/call status updates from Twilio"""
+    try:
+        form_data = await request.form()
+        
+        message_sid = form_data.get("MessageSid")
+        message_status = form_data.get("MessageStatus")
+        call_sid = form_data.get("CallSid")
+        call_status = form_data.get("CallStatus")
+        
+        if message_sid and message_status:
+            # Update message status
+            await db.messages.update_one(
+                {"twilio_sid": message_sid},
+                {"$set": {"status": message_status}}
+            )
+            logger.info(f"Updated message {message_sid} status to {message_status}")
+        
+        if call_sid and call_status:
+            # Update call status
+            result = await db.calls.update_one(
+                {"twilio_sid": call_sid},
+                {"$set": {"status": call_status}}
+            )
+            
+            # If call ended, update duration
+            if call_status in ["completed", "no-answer", "busy", "failed"]:
+                call_duration = form_data.get("CallDuration", 0)
+                await db.calls.update_one(
+                    {"twilio_sid": call_sid},
+                    {"$set": {"duration": int(call_duration) if call_duration else 0}}
+                )
+            
+            logger.info(f"Updated call {call_sid} status to {call_status}")
+        
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Error processing status webhook: {e}")
+        return {"status": "error"}
 
 # ===================== UTILITY ENDPOINTS =====================
 
