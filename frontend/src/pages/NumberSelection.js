@@ -210,7 +210,7 @@ const NumberSelection = () => {
             onClick={() => {
               if (step === 3) setStep(2);
               else if (step === 2) setStep(1);
-              else navigate(-1);
+              else navigate('/dashboard');
             }}
             className="w-10 h-10 rounded-full glass-panel flex items-center justify-center"
           >

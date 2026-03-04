@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { MessageSquare, Plus, Search } from 'lucide-react';
+import { MessageSquare, Plus, Search, Wifi, WifiOff } from 'lucide-react';
 import axios from 'axios';
 import { API } from '../App';
+import useWebSocket from '../hooks/useWebSocket';
 
 const MessagesTab = ({ primaryNumber }) => {
   const navigate = useNavigate();
@@ -10,6 +11,22 @@ const MessagesTab = ({ primaryNumber }) => {
   const [loading, setLoading] = useState(true);
   const [showNewMessage, setShowNewMessage] = useState(false);
   const [newNumber, setNewNumber] = useState('');
+
+  // WebSocket connection for real-time updates
+  const { isConnected, addMessageHandler } = useWebSocket(true);
+
+  // Handle incoming messages to update conversation list
+  useEffect(() => {
+    const handleNewMessage = (data) => {
+      if (data.message) {
+        // Refresh conversations when a new message is sent/received
+        fetchConversations();
+      }
+    };
+
+    const cleanup = addMessageHandler('message_sent', handleNewMessage);
+    return cleanup;
+  }, [addMessageHandler]);
 
   useEffect(() => {
     fetchConversations();
@@ -73,6 +90,21 @@ const MessagesTab = ({ primaryNumber }) => {
 
   return (
     <div data-testid="messages-tab">
+      {/* Connection Status */}
+      <div className="flex items-center justify-end mb-2">
+        {isConnected ? (
+          <div className="flex items-center gap-1 text-xs text-green-400">
+            <Wifi className="w-3 h-3" />
+            <span>Real-time</span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1 text-xs text-white/30">
+            <WifiOff className="w-3 h-3" />
+            <span>Offline</span>
+          </div>
+        )}
+      </div>
+
       {/* New Message Button */}
       <button
         data-testid="new-message-btn"

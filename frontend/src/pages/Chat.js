@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Send, Image, Phone, MoreVertical, Check, CheckCheck } from 'lucide-react';
+import { ArrowLeft, Send, Image, Phone, MoreVertical, Check, CheckCheck, Wifi, WifiOff } from 'lucide-react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { API } from '../App';
+import useWebSocket from '../hooks/useWebSocket';
 
 const Chat = () => {
   const { contactNumber } = useParams();
@@ -12,15 +13,93 @@ const Chat = () => {
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
+  const [typingTimeout, setTypingTimeout] = useState(null);
   const messagesEndRef = useRef(null);
+  const inputRef = useRef(null);
+  
+  // WebSocket connection
+  const {
+    isConnected,
+    sendChatMessage,
+    sendTyping,
+    sendStopTyping,
+    markAsRead,
+    addMessageHandler
+  } = useWebSocket(true);
+
+  // Handle incoming WebSocket messages
+  useEffect(() => {
+    const handleMessageSent = (data) => {
+      if (data.message && data.message.to_number === contactNumber) {
+        setMessages(prev => {
+          // Check if message already exists (avoid duplicates)
+          const exists = prev.some(m => m.message_id === data.message.message_id);
+          if (exists) return prev;
+          return [...prev, data.message];
+        });
+        setSending(false);
+      }
+    };
+
+    const handleTyping = (data) => {
+      if (data.contact_number === contactNumber) {
+        setIsTyping(true);
+        // Clear typing indicator after 3 seconds
+        setTimeout(() => setIsTyping(false), 3000);
+      }
+    };
+
+    const handleError = (data) => {
+      if (data.error_code === 'insufficient_credits') {
+        toast.error('Insufficient credits. Please purchase more.');
+        navigate('/purchase');
+      } else if (data.message) {
+        toast.error(data.message);
+      }
+      setSending(false);
+    };
+
+    const cleanup1 = addMessageHandler('message_sent', handleMessageSent);
+    const cleanup2 = addMessageHandler('typing', handleTyping);
+    const cleanup3 = addMessageHandler('error', handleError);
+
+    return () => {
+      cleanup1();
+      cleanup2();
+      cleanup3();
+    };
+  }, [addMessageHandler, contactNumber, navigate]);
 
   useEffect(() => {
     fetchMessages();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contactNumber]);
 
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Handle typing indicator
+  const handleInputChange = useCallback((e) => {
+    setNewMessage(e.target.value);
+    
+    // Send typing indicator via WebSocket
+    if (isConnected && e.target.value) {
+      sendTyping(contactNumber);
+      
+      // Clear previous timeout
+      if (typingTimeout) {
+        clearTimeout(typingTimeout);
+      }
+      
+      // Stop typing indicator after 2 seconds of no input
+      const timeout = setTimeout(() => {
+        sendStopTyping(contactNumber);
+      }, 2000);
+      setTypingTimeout(timeout);
+    }
+  }, [isConnected, contactNumber, sendTyping, sendStopTyping, typingTimeout]);
 
   const fetchMessages = async () => {
     try {
@@ -28,6 +107,11 @@ const Chat = () => {
         withCredentials: true
       });
       setMessages(response.data.messages);
+      
+      // Mark messages as read
+      response.data.messages
+        .filter(m => m.direction === 'inbound' && !m.is_read)
+        .forEach(m => markAsRead(m.message_id));
     } catch (error) {
       console.error('Error fetching messages:', error);
     } finally {
@@ -43,17 +127,44 @@ const Chat = () => {
     e.preventDefault();
     if (!newMessage.trim() || sending) return;
 
+    const messageText = newMessage.trim();
+    setNewMessage('');
     setSending(true);
+
+    // Try WebSocket first for real-time experience
+    if (isConnected) {
+      const sent = sendChatMessage(contactNumber, messageText);
+      if (sent) {
+        // Optimistically add the message
+        const optimisticMessage = {
+          message_id: `temp_${Date.now()}`,
+          from_number: 'You',
+          to_number: contactNumber,
+          body: messageText,
+          direction: 'outbound',
+          status: 'sending',
+          created_at: new Date().toISOString()
+        };
+        setMessages(prev => [...prev, optimisticMessage]);
+        sendStopTyping(contactNumber);
+        return;
+      }
+    }
+
+    // Fall back to REST API if WebSocket fails
     try {
       const response = await axios.post(`${API}/messages/send`, {
         to_number: contactNumber,
-        body: newMessage
+        body: messageText
       }, {
         withCredentials: true
       });
 
-      setMessages([...messages, response.data]);
-      setNewMessage('');
+      setMessages(prev => {
+        // Remove optimistic message if exists and add real one
+        const filtered = prev.filter(m => !m.message_id.startsWith('temp_'));
+        return [...filtered, response.data];
+      });
     } catch (error) {
       if (error.response?.status === 402) {
         toast.error('Insufficient credits. Please purchase more.');
@@ -61,6 +172,8 @@ const Chat = () => {
       } else {
         toast.error('Failed to send message');
       }
+      // Remove optimistic message on error
+      setMessages(prev => prev.filter(m => !m.message_id.startsWith('temp_')));
     } finally {
       setSending(false);
     }
@@ -80,6 +193,16 @@ const Chat = () => {
     return number;
   };
 
+  const getStatusIcon = (msg) => {
+    if (msg.status === 'sending') {
+      return <div className="w-3 h-3 border border-white/50 border-t-transparent rounded-full animate-spin" />;
+    }
+    if (msg.status === 'delivered' || msg.status === 'read') {
+      return <CheckCheck className="w-3 h-3 text-cyan-400" />;
+    }
+    return <Check className="w-3 h-3 text-white/50" />;
+  };
+
   return (
     <div data-testid="chat-screen" className="min-h-screen flex flex-col">
       {/* Header */}
@@ -94,9 +217,21 @@ const Chat = () => {
               <ArrowLeft className="w-5 h-5 text-white/70" />
             </button>
             <div>
-              <h1 className="text-white font-bold">{formatContactNumber(contactNumber)}</h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-white font-bold">{formatContactNumber(contactNumber)}</h1>
+                {/* Connection status indicator */}
+                {isConnected ? (
+                  <Wifi className="w-3 h-3 text-green-400" title="Real-time connected" />
+                ) : (
+                  <WifiOff className="w-3 h-3 text-white/30" title="Offline mode" />
+                )}
+              </div>
               <p className="text-white/50 text-sm">
-                {messages.length} messages
+                {isTyping ? (
+                  <span className="text-fuchsia-400 animate-pulse">typing...</span>
+                ) : (
+                  `${messages.length} messages`
+                )}
               </p>
             </div>
           </div>
@@ -144,24 +279,32 @@ const Chat = () => {
                     msg.direction === 'outbound'
                       ? 'message-bubble-sent'
                       : 'message-bubble-received'
-                  }`}
+                  } ${msg.status === 'sending' ? 'opacity-70' : ''}`}
                 >
                   <p className="text-white">{msg.body}</p>
                   <div className={`flex items-center gap-1 mt-1 ${
                     msg.direction === 'outbound' ? 'justify-end' : 'justify-start'
                   }`}>
                     <span className="text-white/50 text-xs">{formatTime(msg.created_at)}</span>
-                    {msg.direction === 'outbound' && (
-                      msg.status === 'delivered' ? (
-                        <CheckCheck className="w-3 h-3 text-cyan-400" />
-                      ) : (
-                        <Check className="w-3 h-3 text-white/50" />
-                      )
-                    )}
+                    {msg.direction === 'outbound' && getStatusIcon(msg)}
                   </div>
                 </div>
               </div>
             ))}
+            
+            {/* Typing indicator */}
+            {isTyping && (
+              <div className="flex justify-start">
+                <div className="message-bubble-received px-4 py-3">
+                  <div className="flex gap-1">
+                    <span className="w-2 h-2 bg-fuchsia-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-2 h-2 bg-fuchsia-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-2 h-2 bg-fuchsia-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </div>
+                </div>
+              </div>
+            )}
+            
             <div ref={messagesEndRef} />
           </div>
         )}
@@ -179,11 +322,12 @@ const Chat = () => {
           </button>
           
           <input
+            ref={inputRef}
             data-testid="message-input"
             type="text"
             placeholder="Type a message..."
             value={newMessage}
-            onChange={(e) => setNewMessage(e.target.value)}
+            onChange={handleInputChange}
             className="flex-1 gummy-input"
           />
           

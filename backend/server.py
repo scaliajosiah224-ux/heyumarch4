@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, Header
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -7,13 +7,14 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 import uuid
 from datetime import datetime, timezone, timedelta
 import bcrypt
 from jose import jwt, JWTError
 import aiohttp
 import json
+import asyncio
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -49,6 +50,78 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# ===================== WEBSOCKET CONNECTION MANAGER =====================
+
+class ConnectionManager:
+    """Manages WebSocket connections for real-time messaging"""
+    
+    def __init__(self):
+        # Maps user_id to set of active WebSocket connections
+        self.active_connections: Dict[str, Set[WebSocket]] = {}
+        # Maps WebSocket to user_id for cleanup
+        self.websocket_to_user: Dict[WebSocket, str] = {}
+        # Tracks users who are currently typing
+        self.typing_users: Dict[str, Dict[str, datetime]] = {}  # conversation -> {user_id: timestamp}
+    
+    async def connect(self, websocket: WebSocket, user_id: str):
+        """Accept new WebSocket connection for a user"""
+        await websocket.accept()
+        if user_id not in self.active_connections:
+            self.active_connections[user_id] = set()
+        self.active_connections[user_id].add(websocket)
+        self.websocket_to_user[websocket] = user_id
+        logger.info(f"WebSocket connected for user {user_id}")
+    
+    def disconnect(self, websocket: WebSocket):
+        """Remove WebSocket connection"""
+        user_id = self.websocket_to_user.get(websocket)
+        if user_id and user_id in self.active_connections:
+            self.active_connections[user_id].discard(websocket)
+            if not self.active_connections[user_id]:
+                del self.active_connections[user_id]
+        if websocket in self.websocket_to_user:
+            del self.websocket_to_user[websocket]
+        logger.info(f"WebSocket disconnected for user {user_id}")
+    
+    async def send_personal_message(self, message: dict, user_id: str):
+        """Send message to all connections of a specific user"""
+        if user_id in self.active_connections:
+            dead_connections = []
+            for websocket in self.active_connections[user_id]:
+                try:
+                    await websocket.send_json(message)
+                except Exception as e:
+                    logger.error(f"Error sending to websocket: {e}")
+                    dead_connections.append(websocket)
+            # Clean up dead connections
+            for ws in dead_connections:
+                self.disconnect(ws)
+    
+    async def broadcast_to_conversation(self, message: dict, user_ids: List[str]):
+        """Broadcast message to all users in a conversation"""
+        for user_id in user_ids:
+            await self.send_personal_message(message, user_id)
+    
+    def set_typing(self, user_id: str, contact_number: str):
+        """Mark user as typing in a conversation"""
+        conversation_key = f"{user_id}:{contact_number}"
+        if conversation_key not in self.typing_users:
+            self.typing_users[conversation_key] = {}
+        self.typing_users[conversation_key][user_id] = datetime.now(timezone.utc)
+    
+    def clear_typing(self, user_id: str, contact_number: str):
+        """Clear typing indicator"""
+        conversation_key = f"{user_id}:{contact_number}"
+        if conversation_key in self.typing_users and user_id in self.typing_users[conversation_key]:
+            del self.typing_users[conversation_key][user_id]
+    
+    def is_user_online(self, user_id: str) -> bool:
+        """Check if a user has active connections"""
+        return user_id in self.active_connections and len(self.active_connections[user_id]) > 0
+
+# Global connection manager instance
+ws_manager = ConnectionManager()
 
 # ===================== MODELS =====================
 
@@ -1495,6 +1568,211 @@ async def stripe_webhook(request: Request):
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return {"received": True}
+
+# ===================== WEBSOCKET ENDPOINTS =====================
+
+async def authenticate_websocket(websocket: WebSocket) -> Optional[dict]:
+    """Authenticate WebSocket connection using token from query params or cookie"""
+    token = None
+    
+    # Try query parameter first
+    token = websocket.query_params.get("token")
+    
+    # Fall back to cookie
+    if not token:
+        token = websocket.cookies.get("session_token")
+    
+    if not token:
+        return None
+    
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            return None
+        user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+        return user
+    except JWTError:
+        # Try session token lookup for Google OAuth users
+        session = await db.user_sessions.find_one(
+            {"session_token": token},
+            {"_id": 0}
+        )
+        if session:
+            user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
+            return user
+    return None
+
+@app.websocket("/api/ws/chat")
+async def websocket_chat_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for real-time chat"""
+    user = await authenticate_websocket(websocket)
+    
+    if not user:
+        await websocket.close(code=4001, reason="Authentication required")
+        return
+    
+    user_id = user["user_id"]
+    await ws_manager.connect(websocket, user_id)
+    
+    try:
+        while True:
+            data = await websocket.receive_json()
+            message_type = data.get("type")
+            
+            if message_type == "ping":
+                # Keep-alive ping
+                await websocket.send_json({"type": "pong", "timestamp": datetime.now(timezone.utc).isoformat()})
+            
+            elif message_type == "typing":
+                # User is typing
+                contact_number = data.get("contact_number")
+                if contact_number:
+                    ws_manager.set_typing(user_id, contact_number)
+                    # Broadcast typing indicator to recipient if they're online
+                    # In a real app, you'd look up the recipient's user_id by their phone number
+                    await ws_manager.send_personal_message({
+                        "type": "typing",
+                        "from": user_id,
+                        "contact_number": contact_number,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }, user_id)
+            
+            elif message_type == "stop_typing":
+                # User stopped typing
+                contact_number = data.get("contact_number")
+                if contact_number:
+                    ws_manager.clear_typing(user_id, contact_number)
+            
+            elif message_type == "message":
+                # Send a message via WebSocket
+                to_number = data.get("to_number")
+                body = data.get("body")
+                media_url = data.get("media_url")
+                
+                if not to_number or not body:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "to_number and body are required"
+                    })
+                    continue
+                
+                # Get user's primary number
+                primary_number = await db.phone_numbers.find_one(
+                    {"user_id": user_id, "is_primary": True},
+                    {"_id": 0}
+                )
+                
+                if not primary_number:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "No phone number configured"
+                    })
+                    continue
+                
+                # Check credits
+                credits_needed = 4 if media_url else 1
+                if user.get("credits", 0) < credits_needed and user.get("subscription_type") != "unlimited":
+                    await websocket.send_json({
+                        "type": "error",
+                        "error_code": "insufficient_credits",
+                        "message": "Insufficient credits"
+                    })
+                    continue
+                
+                # Create message
+                message_id = f"msg_{uuid.uuid4().hex[:12]}"
+                now = datetime.now(timezone.utc)
+                status = "queued"
+                
+                # Send via Twilio if enabled
+                if TWILIO_ENABLED and twilio_client and not primary_number.get("is_mock"):
+                    try:
+                        msg_params = {
+                            "body": body,
+                            "from_": primary_number["phone_number"],
+                            "to": to_number
+                        }
+                        if media_url:
+                            msg_params["media_url"] = [media_url]
+                        twilio_msg = twilio_client.messages.create(**msg_params)
+                        status = twilio_msg.status
+                    except Exception as e:
+                        logger.error(f"Twilio send error: {e}")
+                        status = "mock_sent"
+                else:
+                    status = "mock_sent"
+                
+                message_doc = {
+                    "message_id": message_id,
+                    "user_id": user_id,
+                    "from_number": primary_number["phone_number"],
+                    "to_number": to_number,
+                    "body": body,
+                    "media_url": media_url,
+                    "direction": "outbound",
+                    "status": status,
+                    "credits_used": credits_needed,
+                    "created_at": now.isoformat()
+                }
+                
+                await db.messages.insert_one(message_doc)
+                
+                # Deduct credits
+                if user.get("subscription_type") != "unlimited":
+                    await db.users.update_one(
+                        {"user_id": user_id},
+                        {"$inc": {"credits": -credits_needed}}
+                    )
+                
+                # Clear typing indicator
+                ws_manager.clear_typing(user_id, to_number)
+                
+                # Send confirmation back to sender
+                response_msg = {
+                    "type": "message_sent",
+                    "message": {
+                        "message_id": message_id,
+                        "from_number": primary_number["phone_number"],
+                        "to_number": to_number,
+                        "body": body,
+                        "media_url": media_url,
+                        "direction": "outbound",
+                        "status": status,
+                        "credits_used": credits_needed,
+                        "created_at": now.isoformat()
+                    }
+                }
+                await websocket.send_json(response_msg)
+            
+            elif message_type == "mark_read":
+                # Mark message as read
+                message_id = data.get("message_id")
+                if message_id:
+                    await db.messages.update_one(
+                        {"message_id": message_id, "user_id": user_id},
+                        {"$set": {"is_read": True, "read_at": datetime.now(timezone.utc).isoformat()}}
+                    )
+                    await websocket.send_json({
+                        "type": "message_read",
+                        "message_id": message_id
+                    })
+            
+            elif message_type == "get_online_status":
+                # Check if users are online
+                user_ids = data.get("user_ids", [])
+                statuses = {uid: ws_manager.is_user_online(uid) for uid in user_ids}
+                await websocket.send_json({
+                    "type": "online_status",
+                    "statuses": statuses
+                })
+                
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+        logger.info(f"WebSocket disconnected for user {user_id}")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        ws_manager.disconnect(websocket)
 
 # ===================== UTILITY ENDPOINTS =====================
 
